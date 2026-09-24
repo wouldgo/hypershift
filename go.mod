@@ -63,7 +63,7 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/openshift/api v0.0.0-20260930220732-5588d747a72b
+	github.com/openshift/api v0.0.0-20261002101753-2d7b24ada488
 	github.com/openshift/client-go v0.0.0-20261001003915-dcaad1dc7fe8
 	github.com/openshift/cloud-credential-operator v0.0.0-20250225003505-216fd1a30ec3
 	github.com/openshift/cluster-api-provider-agent/api v0.0.0-20260120122324-898e638ec7d1
@@ -316,3 +316,5 @@ replace sigs.k8s.io/karpenter => github.com/openshift/kubernetes-sigs-karpenter 
 
 // Temporary: NTO main requires kube-openapi v0.35.1 (fake tag that only resolves via NTO's own replace)
 replace k8s.io/kube-openapi v0.35.1 => k8s.io/kube-openapi v0.0.0-20260519202549-bbf5c5577288
+
+replace github.com/openshift/library-go => github.com/liouk/library-go v0.0.0-20261005091952-8f3897317cf5
