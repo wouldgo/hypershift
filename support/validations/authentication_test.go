@@ -1,14 +1,20 @@
 package validations
 
 import (
+	"crypto/x509/pkix"
 	"testing"
 
 	"github.com/openshift/hypershift/control-plane-operator/featuregates"
+	"github.com/openshift/hypershift/support/certs"
 
 	configv1 "github.com/openshift/api/config/v1"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/component-base/featuregate"
 	fgtesting "k8s.io/component-base/featuregate/testing"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/stretchr/testify/require"
 )
@@ -191,8 +197,69 @@ func TestValidateAuthenticationSpec(t *testing.T) {
 					fgtesting.SetFeatureGateDuringTest(t, featuregates.Gate(), feature, true)
 				}
 			}
-			err := ValidateAuthenticationSpec(t.Context(), nil, tc.authentication, "foo", []string{})
+			err := ValidateAuthenticationSpec(t.Context(), nil, tc.authentication, "foo", "")
 			require.Equal(t, err != nil, tc.shouldError, "expected error state mismatch", "expected an error?", tc.shouldError, "received", err)
 		})
 	}
+}
+
+func TestValidateAuthenticationSpecExternalOIDCAsWebhook(t *testing.T) {
+	fgtesting.SetFeatureGateDuringTest(t, featuregates.Gate(), featuregates.ExternalOIDCAsWebhook, true)
+
+	newAuthentication := func(issuerURL string) *configv1.AuthenticationSpec {
+		return &configv1.AuthenticationSpec{
+			Type: configv1.AuthenticationTypeOIDC,
+			OIDCProviders: []configv1.OIDCProvider{{
+				Name: "test-provider",
+				Issuer: configv1.TokenIssuer{
+					URL: issuerURL,
+				},
+				ClaimMappings: configv1.TokenClaimMappings{
+					Username: configv1.UsernameClaimMapping{
+						Claim:        "sub",
+						PrefixPolicy: configv1.NoPrefix,
+					},
+				},
+			}},
+		}
+	}
+
+	t.Run("validates webhook authentication configuration", func(t *testing.T) {
+		authn := newAuthentication("https://issuer.example.com")
+		err := ValidateAuthenticationSpec(t.Context(), nil, authn, "test", "https://service-account-issuer.example.com")
+		require.NoError(t, err)
+		require.Empty(t, authn.ServiceAccountIssuer, "validation must not mutate the supplied authentication configuration")
+	})
+
+	t.Run("validates a referenced certificate authority", func(t *testing.T) {
+		_, certificateAuthority, err := certs.GenerateSelfSignedCertificate(&certs.CertCfg{
+			IsCA:    true,
+			Subject: pkix.Name{CommonName: "test-ca", OrganizationalUnit: []string{"test"}},
+		})
+		require.NoError(t, err)
+
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "issuer-ca", Namespace: "test"},
+			Data: map[string]string{
+				certs.UserCABundleMapKey: string(certs.CertToPem(certificateAuthority)),
+			},
+		}).Build()
+
+		authn := newAuthentication("https://issuer.example.com")
+		authn.OIDCProviders[0].Issuer.CertificateAuthority.Name = "issuer-ca"
+		require.NoError(t, ValidateAuthenticationSpec(t.Context(), client, authn, "test", ""))
+	})
+
+	t.Run("rejects an issuer that overlaps with the service account issuer", func(t *testing.T) {
+		err := ValidateAuthenticationSpec(
+			t.Context(),
+			nil,
+			newAuthentication("https://service-account-issuer.example.com"),
+			"test",
+			"https://service-account-issuer.example.com",
+		)
+		require.ErrorContains(t, err, "issuer url cannot overlap with the ServiceAccount issuer url")
+	})
 }
