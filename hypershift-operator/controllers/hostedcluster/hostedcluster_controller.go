@@ -163,6 +163,10 @@ const (
 var (
 	// NoopReconcile is just a default mutation function that does nothing.
 	NoopReconcile controllerutil.MutateFn = func() error { return nil }
+
+	ErrHostedClusterSpecConfigurationConfigMaps         = errors.New("hosted cluster handling spec.configuration config maps")
+	ErrHostedClusterSpecConfigurationSecrets            = errors.New("hosted cluster handling spec.configuration secrets")
+	ErrHostedClusterSpecOperatorConfigurationConfigMaps = errors.New("hosted cluster handling spec.operatorConfiguration config maps")
 )
 
 // HostedClusterReconciler reconciles a HostedCluster object
@@ -2380,33 +2384,55 @@ func (r *HostedClusterReconciler) reconcileGlobalConfigSync(
 	ctx context.Context, hcluster *hyperv1.HostedCluster, createOrUpdate upsert.CreateOrUpdateFN,
 	controlPlaneNamespace string,
 ) error {
-	if hcluster.Spec.Configuration == nil {
-		return nil
+	if hcluster.Spec.Configuration != nil {
+		configMapRefs := configrefs.ConfigMapRefs(hcluster.Spec.Configuration)
+		err := r.handleConfigMapFromRefs(
+			ctx,
+			configMapRefs,
+			hcluster,
+			controlPlaneNamespace,
+			createOrUpdate,
+		)
+		if err != nil {
+			return errors.Join(ErrHostedClusterSpecConfigurationConfigMaps, err)
+		}
+
+		secretRefs := configrefs.SecretRefs(hcluster.Spec.Configuration)
+		err = r.handleSecretFromRefs(
+			ctx,
+			secretRefs,
+			hcluster,
+			controlPlaneNamespace,
+			createOrUpdate,
+		)
+		if err != nil {
+			return errors.Join(ErrHostedClusterSpecConfigurationSecrets, err)
+		}
 	}
-	configMapRefs := configrefs.ConfigMapRefs(hcluster.Spec.Configuration)
-	for _, configMapRef := range configMapRefs {
-		sourceCM := &corev1.ConfigMap{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: hcluster.Namespace, Name: configMapRef}, sourceCM); err != nil {
-			return fmt.Errorf("failed to get referenced configmap %s/%s: %w", hcluster.Namespace, configMapRef, err)
-		}
-		if err := ensureReferencedResourceAnnotation(ctx, r.Client, hcluster.Name, sourceCM); err != nil {
-			return fmt.Errorf("failed to set referenced resource annotation: %w", err)
-		}
-		destCM := &corev1.ConfigMap{}
-		destCM.Name = sourceCM.Name
-		destCM.Namespace = controlPlaneNamespace
-		if _, err := createOrUpdate(ctx, r.Client, destCM, func() error {
-			destCM.Annotations = sourceCM.Annotations
-			destCM.Labels = sourceCM.Labels
-			destCM.Data = sourceCM.Data
-			destCM.BinaryData = sourceCM.BinaryData
-			destCM.Immutable = sourceCM.Immutable
-			return nil
-		}); err != nil {
-			return fmt.Errorf("failed to reconcile referenced config map %s/%s: %w", destCM.Namespace, destCM.Name, err)
+
+	if hcluster.Spec.OperatorConfiguration != nil {
+		operatorConfigurationConfigMapRefs := configrefs.OperatorConfigurationConfigMapRefs(hcluster.Spec.OperatorConfiguration)
+		err := r.handleConfigMapFromRefs(
+			ctx,
+			operatorConfigurationConfigMapRefs,
+			hcluster,
+			controlPlaneNamespace,
+			createOrUpdate,
+		)
+		if err != nil {
+			return errors.Join(ErrHostedClusterSpecOperatorConfigurationConfigMaps, err)
 		}
 	}
-	secretRefs := configrefs.SecretRefs(hcluster.Spec.Configuration)
+	return nil
+}
+
+func (r *HostedClusterReconciler) handleSecretFromRefs(
+	ctx context.Context,
+	secretRefs []string,
+	hcluster *hyperv1.HostedCluster,
+	controlPlaneNamespace string,
+	createOrUpdate upsert.CreateOrUpdateFN,
+) error {
 	for _, secretRef := range secretRefs {
 		sourceSecret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: hcluster.Namespace, Name: secretRef}, sourceSecret); err != nil {
@@ -2430,6 +2456,38 @@ func (r *HostedClusterReconciler) reconcileGlobalConfigSync(
 			return nil
 		}); err != nil {
 			return fmt.Errorf("failed to reconcile secret %s/%s: %w", destSecret.Namespace, destSecret.Name, err)
+		}
+	}
+	return nil
+}
+
+func (r *HostedClusterReconciler) handleConfigMapFromRefs(
+	ctx context.Context,
+	configMapRefs []string,
+	hcluster *hyperv1.HostedCluster,
+	controlPlaneNamespace string,
+	createOrUpdate upsert.CreateOrUpdateFN,
+) error {
+	for _, configMapRef := range configMapRefs {
+		sourceCM := &corev1.ConfigMap{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: hcluster.Namespace, Name: configMapRef}, sourceCM); err != nil {
+			return fmt.Errorf("failed to get referenced configmap %s/%s: %w", hcluster.Namespace, configMapRef, err)
+		}
+		if err := ensureReferencedResourceAnnotation(ctx, r.Client, hcluster.Name, sourceCM); err != nil {
+			return fmt.Errorf("failed to set referenced resource annotation: %w", err)
+		}
+		destCM := &corev1.ConfigMap{}
+		destCM.Name = sourceCM.Name
+		destCM.Namespace = controlPlaneNamespace
+		if _, err := createOrUpdate(ctx, r.Client, destCM, func() error {
+			destCM.Annotations = sourceCM.Annotations
+			destCM.Labels = sourceCM.Labels
+			destCM.Data = sourceCM.Data
+			destCM.BinaryData = sourceCM.BinaryData
+			destCM.Immutable = sourceCM.Immutable
+			return nil
+		}); err != nil {
+			return fmt.Errorf("failed to reconcile referenced config map %s/%s: %w", destCM.Namespace, destCM.Name, err)
 		}
 	}
 	return nil

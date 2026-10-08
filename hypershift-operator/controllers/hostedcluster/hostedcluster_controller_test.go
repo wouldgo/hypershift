@@ -51,6 +51,7 @@ import (
 	"github.com/openshift/hypershift/support/util/fakeimagemetadataprovider"
 
 	configv1 "github.com/openshift/api/config/v1"
+	operatorv1 "github.com/openshift/api/operator/v1"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -6083,6 +6084,203 @@ func TestReconcileAdditionalTrustBundle(t *testing.T) {
 					Namespace: controlPlaneNamespace,
 				}, destConfigMap)
 				g.Expect(errors2.IsNotFound(err)).To(BeTrue())
+			}
+		})
+	}
+}
+
+func TestReconcileGlobalConfigSync(t *testing.T) {
+	t.Parallel()
+	const (
+		testNamespace         = "test-ns"
+		controlPlaneNamespace = "test-hcp-ns"
+		hostedClusterName     = "test-cluster"
+		proxyCAConfigMapName  = "proxy-trusted-ca"
+		proxyCAData           = "-----BEGIN CERTIFICATE-----\nMIIBkTCB..."
+	)
+
+	testCases := []struct {
+		name                   string
+		hostedCluster          *hyperv1.HostedCluster
+		existingObjects        []crclient.Object
+		expectError            bool
+		expectedErrorSubstring string
+		expectErrorIs          error
+		verify                 func(g *WithT, client crclient.Client)
+	}{
+		{
+			name: "When OperatorConfiguration is nil, no sync is attempted",
+			hostedCluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      hostedClusterName,
+					Namespace: testNamespace,
+				},
+			},
+		},
+		{
+			name: "When OperatorConfiguration is set with nil Authentication.Proxy, it should succeed",
+			hostedCluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      hostedClusterName,
+					Namespace: testNamespace,
+				},
+				Spec: hyperv1.HostedClusterSpec{
+					OperatorConfiguration: &hyperv1.OperatorConfiguration{},
+				},
+			},
+		},
+		{
+			name: "When Authentication.Proxy.TrustedCA is set and source configmap exists, it should sync it",
+			hostedCluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      hostedClusterName,
+					Namespace: testNamespace,
+				},
+				Spec: hyperv1.HostedClusterSpec{
+					OperatorConfiguration: &hyperv1.OperatorConfiguration{
+						Authentication: hyperv1.AuthenticationOperatorSpec{
+							Proxy: &operatorv1.AuthenticationProxyConfig{
+								TrustedCA: operatorv1.AuthenticationConfigMapReference{
+									Name: proxyCAConfigMapName,
+								},
+							},
+						},
+					},
+				},
+			},
+			existingObjects: []crclient.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      proxyCAConfigMapName,
+						Namespace: testNamespace,
+					},
+					Data: map[string]string{
+						"ca-bundle.crt": proxyCAData,
+					},
+				},
+			},
+			verify: func(g *WithT, client crclient.Client) {
+				destCM := &corev1.ConfigMap{}
+				err := client.Get(context.Background(), crclient.ObjectKey{
+					Name:      proxyCAConfigMapName,
+					Namespace: controlPlaneNamespace,
+				}, destCM)
+				g.Expect(err).ToNot(HaveOccurred())
+				g.Expect(destCM.Data).To(HaveKeyWithValue("ca-bundle.crt", proxyCAData))
+			},
+		},
+		{
+			name: "When Authentication.Proxy.TrustedCA references a missing configmap, it should fail",
+			hostedCluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      hostedClusterName,
+					Namespace: testNamespace,
+				},
+				Spec: hyperv1.HostedClusterSpec{
+					OperatorConfiguration: &hyperv1.OperatorConfiguration{
+						Authentication: hyperv1.AuthenticationOperatorSpec{
+							Proxy: &operatorv1.AuthenticationProxyConfig{
+								TrustedCA: operatorv1.AuthenticationConfigMapReference{
+									Name: proxyCAConfigMapName,
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError:            true,
+			expectedErrorSubstring: "failed to get referenced configmap",
+			expectErrorIs:          ErrHostedClusterSpecOperatorConfigurationConfigMaps,
+		},
+		{
+			name: "When both Configuration and OperatorConfiguration refs are set, both should sync",
+			hostedCluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      hostedClusterName,
+					Namespace: testNamespace,
+				},
+				Spec: hyperv1.HostedClusterSpec{
+					Configuration: &hyperv1.ClusterConfiguration{
+						Proxy: &configv1.ProxySpec{
+							TrustedCA: configv1.ConfigMapNameReference{
+								Name: "cluster-proxy-ca",
+							},
+						},
+					},
+					OperatorConfiguration: &hyperv1.OperatorConfiguration{
+						Authentication: hyperv1.AuthenticationOperatorSpec{
+							Proxy: &operatorv1.AuthenticationProxyConfig{
+								TrustedCA: operatorv1.AuthenticationConfigMapReference{
+									Name: proxyCAConfigMapName,
+								},
+							},
+						},
+					},
+				},
+			},
+			existingObjects: []crclient.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "cluster-proxy-ca",
+						Namespace: testNamespace,
+					},
+					Data: map[string]string{"ca-bundle.crt": "cluster-proxy-data"},
+				},
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      proxyCAConfigMapName,
+						Namespace: testNamespace,
+					},
+					Data: map[string]string{"ca-bundle.crt": proxyCAData},
+				},
+			},
+			verify: func(g *WithT, client crclient.Client) {
+				clusterCM := &corev1.ConfigMap{}
+				g.Expect(client.Get(context.Background(), crclient.ObjectKey{
+					Name:      "cluster-proxy-ca",
+					Namespace: controlPlaneNamespace,
+				}, clusterCM)).To(Succeed())
+				g.Expect(clusterCM.Data).To(HaveKeyWithValue("ca-bundle.crt", "cluster-proxy-data"))
+
+				operatorCM := &corev1.ConfigMap{}
+				g.Expect(client.Get(context.Background(), crclient.ObjectKey{
+					Name:      proxyCAConfigMapName,
+					Namespace: controlPlaneNamespace,
+				}, operatorCM)).To(Succeed())
+				g.Expect(operatorCM.Data).To(HaveKeyWithValue("ca-bundle.crt", proxyCAData))
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			g := NewWithT(t)
+
+			client := fake.NewClientBuilder().
+				WithScheme(api.Scheme).
+				WithObjects(tc.existingObjects...).
+				Build()
+
+			r := &HostedClusterReconciler{Client: client}
+			createOrUpdate := upsert.New(false).CreateOrUpdate
+
+			err := r.reconcileGlobalConfigSync(ctx, tc.hostedCluster, createOrUpdate, controlPlaneNamespace)
+
+			if tc.expectError {
+				g.Expect(err).To(HaveOccurred())
+				if tc.expectedErrorSubstring != "" {
+					g.Expect(err.Error()).To(ContainSubstring(tc.expectedErrorSubstring))
+				}
+				if tc.expectErrorIs != nil {
+					g.Expect(errors.Is(err, tc.expectErrorIs)).To(BeTrue())
+				}
+			} else {
+				g.Expect(err).ToNot(HaveOccurred())
+			}
+
+			if tc.verify != nil {
+				tc.verify(g, client)
 			}
 		})
 	}

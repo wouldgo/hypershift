@@ -25,6 +25,7 @@ import (
 	azureresources "github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/azure"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/cco"
 	ccm "github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/cloudcontrollermanager/azure"
+	consoleresources "github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/console"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/crd"
 	gcpresources "github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/gcp"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/ingress"
@@ -1186,6 +1187,10 @@ func (r *reconciler) reconcileConfig(ctx context.Context, hcp *hyperv1.HostedCon
 		errs = append(errs, fmt.Errorf("failed to reconcile proxy config: %w", err))
 	}
 
+	if err := r.reconcileConsoleAuthProxy(ctx, hcp); err != nil {
+		errs = append(errs, fmt.Errorf("failed to reconcile console auth proxy: %w", err))
+	}
+
 	err := r.reconcileImageContentPolicyType(ctx, hcp)
 	if err != nil {
 		errs = append(errs, err)
@@ -1274,6 +1279,95 @@ func (r *reconciler) reconcileProxyTrustedCAConfigMap(ctx context.Context, hcp *
 		return fmt.Errorf("failed to reconcile referenced TrustedCA config map %s/%s: %w", destCM.Namespace, destCM.Name, err)
 	}
 
+	return nil
+}
+
+// reconcileConsoleAuthProxy reflects the auth-scoped proxy override
+// (hcp.Spec.OperatorConfiguration.Authentication.Proxy) onto the guest Console
+// operator CR's spec.authProxy. The value applies ONLY to console's OIDC login
+// clients.
+//
+// When the override is unset, spec.authProxy is cleared (the CR is not created)
+// so console-operator falls back to the cluster-wide proxy. When set, the
+// referenced trusted-CA bundle is first copied into the guest and spec.authProxy
+// is enforced on the CR.
+func (r *reconciler) reconcileConsoleAuthProxy(ctx context.Context, hcp *hyperv1.HostedControlPlane) error {
+	var authWideproxyConfig *operatorv1.AuthenticationProxyConfig
+	if oc := hcp.Spec.OperatorConfiguration; oc != nil {
+		authWideproxyConfig = oc.Authentication.Proxy
+	}
+
+	consoleCR := manifests.ConsoleOperatorConfig()
+
+	// Unset or empty override: clear any previously-set authProxy so console
+	// falls back to the cluster-wide proxy. Do not create the CR.
+	if authWideproxyConfig == nil || (authWideproxyConfig.HTTPProxy == "" && authWideproxyConfig.HTTPSProxy == "") {
+		if err := r.client.Get(ctx, client.ObjectKeyFromObject(consoleCR), consoleCR); err != nil {
+			if apierrors.IsNotFound(err) {
+				return r.cleanupConsoleAuthProxyTrustedCA(ctx)
+			}
+			return err
+		}
+		if !reflect.DeepEqual(consoleCR.Spec.AuthProxy, operatorv1.ConsoleAuthProxyConfig{}) {
+			consoleresources.ClearConsoleAuthProxy(consoleCR)
+			if err := r.client.Update(ctx, consoleCR); err != nil {
+				return fmt.Errorf("failed to clear console auth proxy: %w", err)
+			}
+		}
+		return r.cleanupConsoleAuthProxyTrustedCA(ctx)
+	}
+
+	// Override set: copy the referenced trusted-CA bundle into the guest, then
+	// enforce spec.authProxy on the Console CR.
+	guestCAName, err := r.reconcileConsoleAuthProxyTrustedCA(ctx, hcp, authWideproxyConfig.TrustedCA.Name)
+	if err != nil {
+		return err
+	}
+
+	if _, err := r.CreateOrUpdate(ctx, r.client, consoleCR, func() error {
+		consoleresources.ReconcileConsoleAuthProxy(consoleCR, authWideproxyConfig, guestCAName)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to reconcile console auth proxy: %w", err)
+	}
+
+	return nil
+}
+
+// reconcileConsoleAuthProxyTrustedCA copies the CA bundle referenced by the
+// auth-scoped proxy override from the control-plane namespace into a dedicated
+// guest openshift-config ConfigMap, and returns that guest ConfigMap's name.
+// When sourceName is empty, any previously-copied bundle is removed and an empty
+// name is returned.
+func (r *reconciler) reconcileConsoleAuthProxyTrustedCA(ctx context.Context, hcp *hyperv1.HostedControlPlane, sourceName string) (string, error) {
+	if sourceName == "" {
+		return "", r.cleanupConsoleAuthProxyTrustedCA(ctx)
+	}
+
+	sourceCM := &corev1.ConfigMap{}
+	if err := r.cpClient.Get(ctx, client.ObjectKey{Namespace: hcp.Namespace, Name: sourceName}, sourceCM); err != nil {
+		return "", fmt.Errorf("failed to get referenced console auth proxy TrustedCA configmap %s/%s: %w", hcp.Namespace, sourceName, err)
+	}
+
+	destCM := manifests.ConsoleAuthProxyTrustedCAConfigMap()
+	if _, err := r.CreateOrUpdate(ctx, r.client, destCM, func() error {
+		destCM.Data = sourceCM.Data
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("failed to reconcile console auth proxy TrustedCA config map %s/%s: %w", destCM.Namespace, destCM.Name, err)
+	}
+
+	return destCM.Name, nil
+}
+
+// cleanupConsoleAuthProxyTrustedCA removes the dedicated guest CA bundle
+// ConfigMap for console's auth-scoped proxy. It is a no-op when the ConfigMap
+// does not exist.
+func (r *reconciler) cleanupConsoleAuthProxyTrustedCA(ctx context.Context) error {
+	destCM := manifests.ConsoleAuthProxyTrustedCAConfigMap()
+	if err := r.client.Delete(ctx, destCM); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete console auth proxy TrustedCA config map %s/%s: %w", destCM.Namespace, destCM.Name, err)
+	}
 	return nil
 }
 

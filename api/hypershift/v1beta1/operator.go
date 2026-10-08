@@ -392,3 +392,18 @@ type IngressDefaultCertificateReference struct {
 	// +kubebuilder:validation:XValidation:rule="self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$')",message="name must be a valid DNS subdomain name: contain no more than 253 characters, contain only lowercase alphanumeric characters, '-' or '.', and start and end with an alphanumeric character"
 	Name string `json:"name,omitempty"`
 }
+
+// AuthenticationOperatorSpec contains the configuration
+// for the authentication scoped compoments.
+// Namely the auth stack http proxy configuration.
+// +kubebuilder:validation:MinProperties=1
+type AuthenticationOperatorSpec struct {
+	// proxy settings for outbound connections made
+	// by the authentication stack. When set, overwrites entirely the
+	// cluster configured proxy for authentication.
+	// Individual fields are not inherited from the cluster-wide
+	// configuration. When omitted, the cluster-wide proxy is
+	// used if configured; otherwise no proxy is used.
+	// +optional
+	Proxy *operatorv1.AuthenticationProxyConfig `json:"proxy,omitempty"`
+}
