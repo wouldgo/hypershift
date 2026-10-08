@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	configv1 "github.com/openshift/api/config/v1"
 	hyperv1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -13,7 +14,21 @@ import (
 
 const defaultCIDR = "0.0.0.0/0"
 
+// DefaultNoProxy builds the no-proxy list from the cluster-internal defaults and
+// the cluster-wide proxy (spec.configuration.proxy) NoProxy entries.
 func DefaultNoProxy(hcp *hyperv1.HostedControlPlane) string {
+	var proxyConfig *configv1.ProxySpec
+	if hcp.Spec.Configuration != nil {
+		proxyConfig = hcp.Spec.Configuration.Proxy
+	}
+	return DefaultNoProxyForProxy(hcp, proxyConfig)
+}
+
+// DefaultNoProxyForProxy builds the no-proxy list from the cluster-internal
+// defaults and the supplied proxy's NoProxy entries. A component that overrides
+// the cluster-wide proxy passes its effective proxy here so the override's
+// NoProxy replaces the cluster-wide one entirely.
+func DefaultNoProxyForProxy(hcp *hyperv1.HostedControlPlane, proxyConfig *configv1.ProxySpec) string {
 	set := sets.New(
 		"127.0.0.1",
 		"localhost",
@@ -64,8 +79,8 @@ func DefaultNoProxy(hcp *hyperv1.HostedControlPlane) string {
 		set.Insert(clusterNetwork.CIDR.String())
 	}
 
-	if hcp.Spec.Configuration != nil && hcp.Spec.Configuration.Proxy != nil && len(hcp.Spec.Configuration.Proxy.NoProxy) > 0 {
-		for _, userValue := range strings.Split(hcp.Spec.Configuration.Proxy.NoProxy, ",") {
+	if proxyConfig != nil && len(proxyConfig.NoProxy) > 0 {
+		for userValue := range strings.SplitSeq(proxyConfig.NoProxy, ",") {
 			if userValue != "" {
 				set.Insert(userValue)
 			}

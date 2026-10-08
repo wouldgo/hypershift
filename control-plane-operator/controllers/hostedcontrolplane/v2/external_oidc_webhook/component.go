@@ -3,9 +3,10 @@ package extoidc
 import (
 	hyperv1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/featuregates"
-	"github.com/openshift/hypershift/support/reconcilerpolicy"
 	component "github.com/openshift/hypershift/support/controlplane-component"
 	"github.com/openshift/hypershift/support/podspec"
+	"github.com/openshift/hypershift/support/proxy"
+	"github.com/openshift/hypershift/support/reconcilerpolicy"
 )
 
 const (
@@ -58,10 +59,8 @@ func NewComponent() component.ControlPlaneComponent {
 		).
 		InjectAvailabilityProberContainer(podspec.AvailabilityProberOpts{}).
 		InjectKonnectivityContainer(component.KonnectivityContainerOptions{
-			Mode: component.Socks5,
-			Socks5Options: component.Socks5Options{
-				ResolveFromGuestClusterDNS: new(true),
-			},
+			Mode:          component.HTTPS,
+			ProxyOverride: proxy.EffectiveAuthProxy,
 		}).
 		Build()
 }

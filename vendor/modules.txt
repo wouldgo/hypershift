@@ -998,7 +998,7 @@ github.com/opencontainers/image-spec/specs-go/v1
 ## explicit; go 1.19
 github.com/opencontainers/selinux/go-selinux
 github.com/opencontainers/selinux/pkg/pwalkdir
-# github.com/openshift/api v0.0.0-20261002101753-2d7b24ada488
+# github.com/openshift/api v0.0.0-20261002101753-2d7b24ada488 => github.com/tchap/api v0.0.0-20261013094025-9a86f4fa3ce7
 ## explicit; go 1.26.0
 github.com/openshift/api
 github.com/openshift/api/annotations
@@ -2845,3 +2845,4 @@ sigs.k8s.io/yaml/kyaml
 # github.com/aws/karpenter-provider-aws => github.com/openshift/aws-karpenter-provider-aws v0.0.0-20260722223016-abcf7d1e3417
 # sigs.k8s.io/karpenter => github.com/openshift/kubernetes-sigs-karpenter v0.0.0-20260721214330-2b8ed744bf1c
 # github.com/openshift/library-go => github.com/liouk/library-go v0.0.0-20261005091952-8f3897317cf5
+# github.com/openshift/api => github.com/tchap/api v0.0.0-20261013094025-9a86f4fa3ce7

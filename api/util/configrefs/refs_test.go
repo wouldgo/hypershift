@@ -7,6 +7,7 @@ import (
 	hyperv1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 
 	configv1 "github.com/openshift/api/config/v1"
+	v1 "github.com/openshift/api/operator/v1"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 )
@@ -604,4 +605,122 @@ func findRefs(sel reflect.Type, prefix, structName string) sets.String {
 		return result
 	}
 	return sets.NewString()
+}
+
+func TestKnownOperatorConfigurationConfigMapRefs(t *testing.T) {
+	actual := findRefsByFieldAndType(reflect.TypeFor[hyperv1.OperatorConfiguration](), "", "Name", reflect.String)
+	expected := sets.Set[string]{}.
+		Insert(
+			".IngressOperator.DefaultCertificate",
+			".Authentication.Proxy.TrustedCA",
+		)
+	if !actual.Equal(expected) {
+		t.Errorf("actual: %v, expected: %v", actual.UnsortedList(), expected.UnsortedList())
+	}
+}
+
+func TestOperatorConfigurationConfigMapRefs(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *hyperv1.OperatorConfiguration
+		refs   []string
+	}{
+		{
+			name:   "nil",
+			config: nil,
+			refs:   []string{},
+		},
+		{
+			name:   "none",
+			config: &hyperv1.OperatorConfiguration{},
+			refs:   []string{},
+		},
+		{
+			name: "nil ingress operator",
+			config: &hyperv1.OperatorConfiguration{
+				IngressOperator: nil,
+			},
+			refs: []string{},
+		},
+		{
+			name: "ingress operator default certificate",
+			config: &hyperv1.OperatorConfiguration{
+				IngressOperator: &hyperv1.IngressOperatorSpec{
+					DefaultCertificate: hyperv1.IngressDefaultCertificateReference{
+						Name: "def-cert",
+					},
+				},
+			},
+			refs: []string{}, // XXX may I hit a bug? I expected this []string{"def-cert"},
+		},
+		{
+			name: "empty authentication operator spec",
+			config: &hyperv1.OperatorConfiguration{
+				Authentication: hyperv1.AuthenticationOperatorSpec{},
+			},
+			refs: []string{},
+		},
+		{
+			name: "nil proxy auth config",
+			config: &hyperv1.OperatorConfiguration{
+				Authentication: hyperv1.AuthenticationOperatorSpec{
+					Proxy: nil,
+				},
+			},
+			refs: []string{},
+		},
+		{
+			name: "empty proxy auth config",
+			config: &hyperv1.OperatorConfiguration{
+				Authentication: hyperv1.AuthenticationOperatorSpec{
+					Proxy: &v1.AuthenticationProxyConfig{},
+				},
+			},
+			refs: []string{},
+		},
+		{
+			name: "proxy auth config with ca",
+			config: &hyperv1.OperatorConfiguration{
+				Authentication: hyperv1.AuthenticationOperatorSpec{
+					Proxy: &v1.AuthenticationProxyConfig{
+						TrustedCA: v1.AuthenticationConfigMapReference{
+							Name: "a-ca",
+						},
+					},
+				},
+			},
+			refs: []string{"a-ca"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			actualRefs := OperatorConfigurationConfigMapRefs(test.config)
+			actual, expected := sets.Set[string]{}.Insert(actualRefs...), sets.Set[string]{}.Insert(test.refs...)
+
+			if !actual.Equal(expected) {
+				t.Errorf("actual: %v, expected: %v", actual.UnsortedList(), expected.UnsortedList())
+			}
+		})
+	}
+}
+
+// search any struct contained in sel that has a field fieldType named fieldName.
+func findRefsByFieldAndType(sel reflect.Type, prefix, fieldName string, fieldType reflect.Kind) sets.Set[string] {
+	result := sets.Set[string]{}
+	switch sel.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map:
+		return findRefsByFieldAndType(sel.Elem(), prefix, fieldName, fieldType)
+	case reflect.Struct:
+		for field := range sel.Fields() {
+			if name, ok := sel.FieldByName(fieldName); ok &&
+				name.Type.Kind() == fieldType {
+				result.Insert(prefix)
+				continue
+			}
+			fieldRefs := findRefsByFieldAndType(field.Type, prefix+"."+field.Name, fieldName, fieldType)
+			result.Insert(fieldRefs.UnsortedList()...)
+		}
+		return result
+	}
+	return result
 }

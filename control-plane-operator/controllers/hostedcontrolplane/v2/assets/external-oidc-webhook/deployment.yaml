@@ -29,11 +29,9 @@ spec:
         - --v=2
         env:
         - name: HTTP_PROXY
-          value: socks5://127.0.0.1:8090
+          value: http://127.0.0.1:8090
         - name: HTTPS_PROXY
-          value: socks5://127.0.0.1:8090
-        - name: NO_PROXY
-          value: kube-apiserver
+          value: http://127.0.0.1:8090
         image: oauth-apiserver
         imagePullPolicy: IfNotPresent
         name: external-oidc-webhook

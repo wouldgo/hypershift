@@ -6,12 +6,45 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	configv1 "github.com/openshift/api/config/v1"
 	hyperv1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	"github.com/openshift/hypershift/api/util/ipnet"
+	"github.com/openshift/hypershift/support/testutil"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
+
+// findArg returns the value that follows flag in args, or "" when absent.
+func findArg(args []string, flag string) string {
+	for i := range args {
+		if args[i] == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// projectedProxyCAName returns the ConfigMap name projected as the proxy
+// trusted-ca source, or "" when the volume is absent.
+func projectedProxyCAName(podSpec *corev1.PodSpec) string {
+	for _, v := range podSpec.Volumes {
+		if v.Name != "proxy-additional-trust-bundle" || v.Projected == nil {
+			continue
+		}
+		for _, src := range v.Projected.Sources {
+			if src.ConfigMap == nil {
+				continue
+			}
+			for _, item := range src.ConfigMap.Items {
+				if item.Path == "proxy-trusted-ca.pem" {
+					return src.ConfigMap.Name
+				}
+			}
+		}
+	}
+	return ""
+}
 
 func findEnvVar(envVars []corev1.EnvVar, name string) *corev1.EnvVar {
 	for i := range envVars {
@@ -276,6 +309,119 @@ func TestIsSingleStackIPv4(t *testing.T) {
 					hyperv1.ServiceNetworkEntry{CIDR: *ipnet.MustParseCIDR(cidr)})
 			}
 			g.Expect(isSingleStackIPv4(hcp)).To(Equal(tt.expected))
+		})
+	}
+}
+
+func TestBuildContainerProxyOverride(t *testing.T) {
+	clusterWide := &configv1.ProxySpec{
+		HTTPProxy:  "http://cluster:3128",
+		HTTPSProxy: "https://cluster:3128",
+		NoProxy:    "cluster-only.example.com",
+	}
+	override := &configv1.ProxySpec{
+		HTTPProxy:  "http://auth:8080",
+		HTTPSProxy: "https://auth:8080",
+		NoProxy:    "idp.example.com",
+	}
+
+	tests := []struct {
+		name                                                            string
+		override                                                        *configv1.ProxySpec
+		expectHTTPProxy, expectHTTPSProxy, expectNoProxy, absentNoProxy string
+	}{
+		{
+			name:             "without override it uses the cluster-wide proxy",
+			override:         nil,
+			expectHTTPProxy:  "http://cluster:3128",
+			expectHTTPSProxy: "https://cluster:3128",
+			expectNoProxy:    "cluster-only.example.com",
+			absentNoProxy:    "idp.example.com",
+		},
+		{
+			name:             "with override it uses the override and drops the cluster-wide NoProxy",
+			override:         override,
+			expectHTTPProxy:  "http://auth:8080",
+			expectHTTPSProxy: "https://auth:8080",
+			expectNoProxy:    "idp.example.com",
+			absentNoProxy:    "cluster-only.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			hcp := &hyperv1.HostedControlPlane{
+				Spec: hyperv1.HostedControlPlaneSpec{
+					Configuration: &hyperv1.ClusterConfiguration{Proxy: clusterWide},
+				},
+			}
+			opts := KonnectivityContainerOptions{Mode: HTTPS}
+			if tt.override != nil {
+				override := tt.override
+				opts.ProxyOverride = func(*hyperv1.HostedControlPlane) *configv1.ProxySpec { return override }
+			}
+
+			container := opts.buildContainer(hcp, "test-image:latest", nil)
+
+			g.Expect(findArg(container.Args, "--http-proxy")).To(Equal(tt.expectHTTPProxy))
+			g.Expect(findArg(container.Args, "--https-proxy")).To(Equal(tt.expectHTTPSProxy))
+
+			noProxy := findArg(container.Args, "--no-proxy")
+			g.Expect(noProxy).To(ContainSubstring(tt.expectNoProxy))
+			g.Expect(noProxy).NotTo(ContainSubstring(tt.absentNoProxy))
+		})
+	}
+}
+
+func TestInjectKonnectivityContainerProxyOverrideCA(t *testing.T) {
+	tests := []struct {
+		name         string
+		override     *configv1.ProxySpec
+		expectCAName string
+	}{
+		{
+			name:         "without override it projects the cluster-wide proxy CA",
+			override:     nil,
+			expectCAName: "cluster-ca",
+		},
+		{
+			name: "with override it projects the override proxy CA",
+			override: &configv1.ProxySpec{
+				HTTPSProxy: "https://auth:8080",
+				TrustedCA:  configv1.ConfigMapNameReference{Name: "auth-ca"},
+			},
+			expectCAName: "auth-ca",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			cpContext := ControlPlaneContext{
+				Context:              t.Context(),
+				ReleaseImageProvider: testutil.FakeImageProvider(),
+				HCP: &hyperv1.HostedControlPlane{
+					Spec: hyperv1.HostedControlPlaneSpec{
+						Configuration: &hyperv1.ClusterConfiguration{
+							Proxy: &configv1.ProxySpec{
+								HTTPSProxy: "https://cluster:3128",
+								TrustedCA:  configv1.ConfigMapNameReference{Name: "cluster-ca"},
+							},
+						},
+					},
+				},
+			}
+			opts := KonnectivityContainerOptions{Mode: HTTPS}
+			if tt.override != nil {
+				override := tt.override
+				opts.ProxyOverride = func(*hyperv1.HostedControlPlane) *configv1.ProxySpec { return override }
+			}
+
+			podSpec := &corev1.PodSpec{}
+			opts.injectKonnectivityContainer(cpContext, podSpec)
+
+			g.Expect(projectedProxyCAName(podSpec)).To(Equal(tt.expectCAName))
 		})
 	}
 }

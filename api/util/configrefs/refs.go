@@ -1,6 +1,10 @@
 package configrefs
 
 import (
+	"reflect"
+
+	v1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
+
 	configv1 "github.com/openshift/api/config/v1"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -108,7 +112,6 @@ func authenticationConfigMapRefs(spec *configv1.AuthenticationSpec) sets.String 
 	}
 	return refs
 }
-
 
 func imageConfigMapRefs(spec *configv1.ImageSpec) sets.String {
 	refs := sets.NewString()
@@ -240,4 +243,43 @@ func schedulerConfigMapRefs(spec *configv1.SchedulerSpec) sets.String {
 		refs.Insert(spec.Policy.Name)
 	}
 	return refs
+}
+
+type OperatorConfiguration interface {
+	GetAuthentication() v1beta1.AuthenticationOperatorSpec
+}
+
+func OperatorConfigurationConfigMapRefs(cfg OperatorConfiguration) []string {
+	result := sets.Set[string]{}
+
+	if isNil(cfg) {
+		return result.UnsortedList()
+	}
+
+	result = result.Union(authenticationOperatorConfigurationConfigMapRefs(cfg.GetAuthentication()))
+	return result.UnsortedList()
+}
+
+func authenticationOperatorConfigurationConfigMapRefs(spec v1beta1.AuthenticationOperatorSpec) sets.Set[string] {
+	refs := sets.Set[string]{}
+
+	if spec.Proxy != nil && spec.Proxy.TrustedCA.Name != "" {
+		refs.Insert(spec.Proxy.TrustedCA.Name)
+	}
+	return refs
+}
+
+func isNil(t any) bool {
+	if t == nil {
+		return true
+	}
+	rv := reflect.ValueOf(t)
+
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice,
+		reflect.Func, reflect.Interface, reflect.Chan:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }

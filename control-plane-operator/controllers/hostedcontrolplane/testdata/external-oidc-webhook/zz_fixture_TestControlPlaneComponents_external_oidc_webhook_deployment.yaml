@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   annotations:
-    hypershift.openshift.io/desired-state-hash: 50c3766eacaabf93a6f23f002c173ece875318ba01237985b9f296ff4f0a5def
+    hypershift.openshift.io/desired-state-hash: 2b8b92af903072ff8ab9baa49db5134843e8547e03d0fc0a61dc263ceadb9d80
   labels:
     hypershift.openshift.io/managed-by: control-plane-operator
   name: external-oidc-webhook
@@ -96,11 +96,11 @@ spec:
         - /usr/bin/oauth-apiserver
         env:
         - name: HTTP_PROXY
-          value: socks5://127.0.0.1:8090
+          value: http://127.0.0.1:8090
         - name: HTTPS_PROXY
-          value: socks5://127.0.0.1:8090
+          value: http://127.0.0.1:8090
         - name: NO_PROXY
-          value: kube-apiserver
+          value: ..compute.internal,.cluster.local,.hypershift.local,.svc,10.132.0.0/14,127.0.0.1,169.254.169.254,localhost,kube-apiserver
         image: oauth-apiserver
         imagePullPolicy: IfNotPresent
         name: external-oidc-webhook
@@ -120,15 +120,14 @@ spec:
           name: tmp-dir
       - args:
         - run
-        - --resolve-from-guest-cluster-dns=true
         command:
         - /usr/bin/control-plane-operator
-        - konnectivity-socks5-proxy
+        - konnectivity-https-proxy
         env:
         - name: KUBECONFIG
           value: /etc/kubernetes/secrets/kubeconfig/kubeconfig
         image: controlplane-operator
-        name: konnectivity-proxy-socks5
+        name: konnectivity-proxy-https
         resources:
           requests:
             cpu: 10m

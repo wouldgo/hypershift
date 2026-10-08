@@ -15,6 +15,7 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -78,6 +79,25 @@ func TestAdaptDeployment(t *testing.T) {
 			for _, cipherSuite := range expectedCipherSuites {
 				g.Expect(container.Args).To(ContainElement(fmt.Sprintf("--tls-cipher-suites=%s", cipherSuite)))
 			}
+
+			// The asset points the egress at the local HTTPS konnectivity sidecar.
+			g.Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "HTTP_PROXY", Value: "http://127.0.0.1:8090"}))
+			g.Expect(container.Env).To(ContainElement(corev1.EnvVar{Name: "HTTPS_PROXY", Value: "http://127.0.0.1:8090"}))
+
+			// NO_PROXY is computed in code: cluster-internal defaults plus the
+			// in-cluster kube-apiserver TokenReview target.
+			noProxy := findEnvVarValue(container.Env, "NO_PROXY")
+			g.Expect(noProxy).To(ContainSubstring("kube-apiserver"))
+			g.Expect(noProxy).To(ContainSubstring(".cluster.local"))
 		})
 	}
+}
+
+func findEnvVarValue(envVars []corev1.EnvVar, name string) string {
+	for _, e := range envVars {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
 }

@@ -318,3 +318,5 @@ replace sigs.k8s.io/karpenter => github.com/openshift/kubernetes-sigs-karpenter 
 replace k8s.io/kube-openapi v0.35.1 => k8s.io/kube-openapi v0.0.0-20260519202549-bbf5c5577288
 
 replace github.com/openshift/library-go => github.com/liouk/library-go v0.0.0-20261005091952-8f3897317cf5
+
+replace github.com/openshift/api => github.com/tchap/api v0.0.0-20261013094025-9a86f4fa3ce7

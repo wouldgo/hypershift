@@ -34,6 +34,25 @@ type KonnectivityContainerOptions struct {
 
 	HTTPSOptions  HTTPSOptions
 	Socks5Options Socks5Options
+
+	// ProxyOverride, when set, is called at reconcile with the HCP to resolve the
+	// proxy this sidecar uses for its egress, including the trustedCA source. It
+	// replaces hcp.Spec.Configuration.Proxy entirely. There is no field merge.
+	// It is a function because the HCP is only available at reconcile, not when
+	// the component is built.
+	ProxyOverride func(*hyperv1.HostedControlPlane) *configv1.ProxySpec
+}
+
+// effectiveProxyConfig returns the proxy this sidecar must use. It returns the
+// per-component override when set, else the cluster-wide proxy.
+func (opts KonnectivityContainerOptions) effectiveProxyConfig(hcp *hyperv1.HostedControlPlane) *configv1.ProxySpec {
+	if opts.ProxyOverride != nil {
+		return opts.ProxyOverride(hcp)
+	}
+	if hcp.Spec.Configuration != nil {
+		return hcp.Spec.Configuration.Proxy
+	}
+	return nil
 }
 
 type HTTPSOptions struct {
@@ -105,11 +124,12 @@ func (opts KonnectivityContainerOptions) injectKonnectivityContainer(cpContext C
 		})
 	}
 
-	if hcp.Spec.Configuration != nil && hcp.Spec.Configuration.Proxy != nil && len(hcp.Spec.Configuration.Proxy.TrustedCA.Name) > 0 {
+	proxyConfig := opts.effectiveProxyConfig(hcp)
+	if proxyConfig != nil && len(proxyConfig.TrustedCA.Name) > 0 {
 		proxyAdditionalCAs = append(proxyAdditionalCAs, corev1.VolumeProjection{
 			ConfigMap: &corev1.ConfigMapProjection{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: hcp.Spec.Configuration.Proxy.TrustedCA.Name,
+					Name: proxyConfig.TrustedCA.Name,
 				},
 				Items: []corev1.KeyToPath{{Key: "ca-bundle.crt", Path: "proxy-trusted-ca.pem"}},
 			},
@@ -134,10 +154,7 @@ func (opts KonnectivityContainerOptions) injectKonnectivityContainer(cpContext C
 const certsTrustPath = "/etc/pki/tls/certs"
 
 func (opts KonnectivityContainerOptions) buildContainer(hcp *hyperv1.HostedControlPlane, image string, proxyAdditionalCAs []corev1.VolumeProjection) corev1.Container {
-	var proxyConfig *configv1.ProxySpec
-	if hcp.Spec.Configuration != nil {
-		proxyConfig = hcp.Spec.Configuration.Proxy
-	}
+	proxyConfig := opts.effectiveProxyConfig(hcp)
 
 	command := []string{"/usr/bin/control-plane-operator"}
 	args := []string{"run"}
@@ -145,7 +162,7 @@ func (opts KonnectivityContainerOptions) buildContainer(hcp *hyperv1.HostedContr
 	case HTTPS:
 		command = append(command, "konnectivity-https-proxy")
 		if proxyConfig != nil {
-			noProxy := proxy.DefaultNoProxy(hcp)
+			noProxy := proxy.DefaultNoProxyForProxy(hcp, proxyConfig)
 			args = append(args, "--http-proxy", proxyConfig.HTTPProxy)
 			args = append(args, "--https-proxy", proxyConfig.HTTPSProxy)
 			args = append(args, "--no-proxy", noProxy)
